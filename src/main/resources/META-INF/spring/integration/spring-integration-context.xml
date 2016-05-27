@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:int="http://www.springframework.org/schema/integration"
+	xmlns:int-http="http://www.springframework.org/schema/integration/http"
+	xmlns:int-mail="http://www.springframework.org/schema/integration/mail"
+	xmlns:context="http://www.springframework.org/schema/context"
+	xmlns:task="http://www.springframework.org/schema/task"
+	xmlns:util="http://www.springframework.org/schema/util"
+	xsi:schemaLocation="http://www.springframework.org/schema/integration http://www.springframework.org/schema/integration/spring-integration-4.2.xsd
+		http://www.springframework.org/schema/integration/http https://raw.githubusercontent.com/spring-projects/spring-integration/master/spring-integration-http/src/main/resources/org/springframework/integration/http/config/spring-integration-http-4.3.xsd
+		http://www.springframework.org/schema/integration/mail https://raw.githubusercontent.com/spring-projects/spring-integration/master/spring-integration-mail/src/main/resources/org/springframework/integration/mail/config/spring-integration-mail-4.3.xsd
+		http://www.springframework.org/schema/task http://www.springframework.org/schema/task/spring-task.xsd
+		http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd
+		http://www.springframework.org/schema/context http://www.springframework.org/schema/context/spring-context.xsd
+		http://www.springframework.org/schema/util http://www.springframework.org/schema/util/spring-util-3.2.xsd">
+
+	<context:property-placeholder />
+
+	<!-- File -->
+
+	<int:channel id="folder-request"></int:channel>
+	<int:channel id="file-scrape-requests">
+		<int:dispatcher task-executor="requestExecutor" />
+	</int:channel>
+	<int:channel id="file-scrape-response"></int:channel>
+	<int:channel id="log-splitter"></int:channel>
+
+	<bean id="collectionSplitter" class="org.eu.mmacedo.mycrawler.integration.CollectionSplitter" />
+	<bean id="fileInboundFeeder" class="org.eu.mmacedo.mycrawler.file.inbound.FileInboundFeeder" />
+	<bean id="fileScraperService"
+		class="org.eu.mmacedo.mycrawler.file.service.FileScraperService" />
+
+
+	<int:gateway id="fileGateway" default-request-channel="folder-request"
+		service-interface="org.eu.mmacedo.mycrawler.file.FeedRequestGateway" />
+
+	<int:splitter input-channel="folder-request" ref="fileInboundFeeder"
+		output-channel="file-scrape-requests">
+	</int:splitter>
+
+	<int:splitter input-channel="file-scrape-requests" method="run"
+		output-channel="log-splitter" ref="fileScraperService">
+	</int:splitter>
+
+	<!-- Web -->
+
+	<int:channel id="webChannel">
+		<int:dispatcher task-executor="requestExecutor" />
+	</int:channel>
+	<int:channel id="input-web-scraping">
+		<int:interceptors>
+			<int:wire-tap channel="depth-handling" />
+		</int:interceptors>
+	</int:channel>
+	<int:channel id="depth-handling"></int:channel>
+
+	<bean id="webRequestFeeder" class="org.eu.mmacedo.mycrawler.web.inbound.RequestWeb" />
+	<bean id="webScraperService" class="org.eu.mmacedo.mycrawler.web.service.WebScraperService" />
+	<bean id="webDepthHandler"
+		class="org.eu.mmacedo.mycrawler.web.service.WebDepthHandlerService" />
+
+
+	<int:outbound-channel-adapter channel="depth-handling"
+		ref="webDepthHandler" method="run" />
+
+	<int:service-activator input-channel="input-web-scraping"
+		method="run" output-channel="log-splitter" ref="webScraperService">
+	</int:service-activator>
+
+	<int-http:outbound-gateway id="weboutgateway"
+		request-channel="webChannel" reply-channel="input-web-scraping"
+		url-expression="headers['X-URL']" http-method="GET"
+		expected-response-type="java.lang.String" />
+
+	<!-- Gmail -->
+	<bean id="mailScraperService" class="org.eu.mmacedo.mycrawler.mail.service.MailScraperService" />	
+	<bean id="mailAuthFeed" class="org.eu.mmacedo.mycrawler.mail.inbound.MailAuthFeed" />	
+	
+	<int:channel id="imapReceiveChannel"></int:channel>
+
+	<int:service-activator input-channel="imapReceiveChannel" output-channel="log-splitter"
+		ref="mailScraperService" method="run" />
+
+	<int-mail:imap-idle-channel-adapter id="imapAdapter"
+		store-uri="imaps://${username}:${password}@imap.gmail.com/INBOX"
+		java-mail-properties="javaMailProperties" channel="imapReceiveChannel"
+		should-delete-messages="false" should-mark-messages-as-read="false"
+		auto-startup="false"/>
+
+	<util:properties id="javaMailProperties">
+		<prop key="mail.imap.socketFactory.class">javax.net.ssl.SSLSocketFactory</prop>
+		<prop key="mail.imap.socketFactory.fallback">false</prop>
+		<prop key="mail.store.protocol">imaps</prop>
+		<prop key="mail.debug">false</prop>
+	</util:properties>
+
+	<!-- Global -->
+
+	<int:splitter input-channel="log-splitter" ref="collectionSplitter"
+		output-channel="logger">
+	</int:splitter>
+
+	<task:executor id="requestExecutor" pool-size="4"
+		rejection-policy="CALLER_RUNS" />
+
+	<!-- Enable @Inject -->
+	<context:annotation-config />
+
+	<int:logging-channel-adapter id="logger"
+		level="INFO" log-full-message="true" />
+	<int:channel id="controlChannel"/>
+	<int:control-bus input-channel="controlChannel"/>	
+
+</beans>
